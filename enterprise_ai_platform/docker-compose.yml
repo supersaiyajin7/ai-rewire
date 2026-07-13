@@ -1,0 +1,55 @@
+services:
+  localstack:
+    container_name: localstack_main
+    image: localstack/localstack:latest
+    ports:
+      - "127.0.0.1:4566:4566"
+      - "127.0.0.1:4510-4559:4510-4559"
+    environment:
+      - AWS_DEFAULT_REGION=us-east-1
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
+    volumes:
+      - "localstack:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - platform_network
+
+  api_platform:
+    container_name: ai_platform_app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ENDPOINT_URL_S3=http://localstack:4566
+    depends_on:
+      - localstack
+    volumes:
+      - .:/workspace
+    networks:
+      - platform_network
+
+  # 🔥 THE DYNAMODB VISUAL MANAGER: Displays tables, keys, and row attributes natively
+  localstack_gui:
+    container_name: localstack_dashboard_ui
+    image: aaronshaf/dynamodb-admin:latest
+    ports:
+      - "127.0.0.1:8001:8001"
+    environment:
+      - DYNAMO_ENDPOINT=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=mock_id
+      - AWS_SECRET_ACCESS_KEY=mock_secret
+    depends_on:
+      - localstack
+    networks:
+      - platform_network
+
+networks:
+  platform_network:
+    name: platform_architecture_net
+
+volumes:
+  localstack:

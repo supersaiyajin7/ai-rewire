@@ -1,0 +1,6 @@
+{
+  "app": "python infra/app_infra.py",
+  "context": {
+    "@aws-cdk/core:newStyleStackSynthesis": true
+  }
+}

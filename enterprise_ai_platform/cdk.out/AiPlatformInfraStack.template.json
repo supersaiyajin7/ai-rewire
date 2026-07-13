@@ -1,0 +1,37 @@
+{
+ "Resources": {
+  "PlatformJobsTable96553AE4": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "job_id",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "job_id",
+      "KeyType": "HASH"
+     }
+    ],
+    "TableName": "platform_jobs"
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "AiPlatformInfraStack/PlatformJobsTable/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/zPSMzQ21jNQTCwv1k1OydbNyUzSqw4uSUzO1gEKxadU5iXm5qcAxUISk3JSdZzT8sCMWp2g1OL80qJksBCMXasTUFmSkZ+nb6xnaKhnaKqYVZyZqVtUmleSmZuqFwShAU4YLMJyAAAA"
+   },
+   "Metadata": {
+    "aws:cdk:path": "AiPlatformInfraStack/CDKMetadata/Default"
+   }
+  }
+ }
+}

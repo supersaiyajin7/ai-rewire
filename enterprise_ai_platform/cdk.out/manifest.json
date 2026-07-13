@@ -1,0 +1,43 @@
+{
+  "version": "36.0.0",
+  "artifacts": {
+    "AiPlatformInfraStack": {
+      "type": "aws:cloudformation:stack",
+      "environment": "aws://000000000000/us-east-1",
+      "properties": {
+        "templateFile": "AiPlatformInfraStack.template.json",
+        "terminationProtection": false,
+        "validateOnSynth": false
+      },
+      "metadata": {
+        "/AiPlatformInfraStack/PlatformJobsTable": [
+          {
+            "type": "aws:cdk:hasPhysicalName",
+            "data": {
+              "Ref": "PlatformJobsTable96553AE4"
+            }
+          }
+        ],
+        "/AiPlatformInfraStack/PlatformJobsTable/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "PlatformJobsTable96553AE4"
+          }
+        ],
+        "/AiPlatformInfraStack/CDKMetadata/Default": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "CDKMetadata"
+          }
+        ]
+      },
+      "displayName": "AiPlatformInfraStack"
+    },
+    "Tree": {
+      "type": "cdk:tree",
+      "properties": {
+        "file": "tree.json"
+      }
+    }
+  }
+}

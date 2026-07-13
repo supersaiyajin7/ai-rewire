@@ -1,0 +1,1 @@
+"""Infrastructure as Code - CDK stack definitions for AWS resources"""
