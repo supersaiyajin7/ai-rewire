@@ -21,6 +21,9 @@ services:
       dockerfile: Dockerfile
     ports:
       - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    # 🔄 This overrides the localhost address with the internal Docker network address
     environment:
       - AWS_ENDPOINT_URL=http://localstack:4566
       - AWS_ENDPOINT_URL_S3=http://localstack:4566

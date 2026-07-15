@@ -3,12 +3,14 @@ import uuid
 from typing import Optional, Dict, Any
 from app.core.schemas import JobCreateRequest, JobStatus
 from app.infrastructure.aws.client import get_dynamodb_resource
+from app.config import settings
+
 
 class DynamoJobRepository:
     """Production-grade State Engine backed by AWS DynamoDB (LocalStack)."""
     def __init__(self):
         self.db = get_dynamodb_resource()
-        self.table = self.db.Table("platform_jobs")
+        self.table = self.db.Table(settings.DYNAMODB_TABLE_NAME)
 
     def create(self, request: JobCreateRequest) -> Dict[str, Any]:
         job_id = str(uuid.uuid4())
