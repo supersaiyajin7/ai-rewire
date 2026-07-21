@@ -24,10 +24,21 @@
     "aws:cdk:path": "AiPlatformInfraStack/PlatformJobsTable/Resource"
    }
   },
+  "PlatformJobsQueue0C2C25AD": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "QueueName": "platform-job-queue"
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "AiPlatformInfraStack/PlatformJobsQueue/Resource"
+   }
+  },
   "CDKMetadata": {
    "Type": "AWS::CDK::Metadata",
    "Properties": {
-    "Analytics": "v2:deflate64:H4sIAAAAAAAA/zPSMzQ21jNQTCwv1k1OydbNyUzSqw4uSUzO1gEKxadU5iXm5qcAxUISk3JSdZzT8sCMWp2g1OL80qJksBCMXasTUFmSkZ+nb6xnaKhnaKqYVZyZqVtUmleSmZuqFwShAU4YLMJyAAAA"
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/zXITQ7CIBBA4bN0P4wi8QReoK3dGwoY6Q+kDMQ0hLvb0Lh6L98NuRB4beSXmNIzW+yI+RmlmuGgV9a7k6vXBw5yXAw83q5OAdoIc5dMqlinFOgN+RRUtf8XaPf48e4ikHPk92Yia1lILtrVYH/2B492PISJAAAA"
    },
    "Metadata": {
     "aws:cdk:path": "AiPlatformInfraStack/CDKMetadata/Default"

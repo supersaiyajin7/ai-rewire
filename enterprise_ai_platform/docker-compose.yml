@@ -23,10 +23,23 @@ services:
       - "127.0.0.1:8000:8000"
     env_file:
       - .env
-    # 🔄 This overrides the localhost address with the internal Docker network address
-    environment:
-      - AWS_ENDPOINT_URL=http://localstack:4566
-      - AWS_ENDPOINT_URL_S3=http://localstack:4566
+    depends_on:
+      - localstack
+    volumes:
+      - .:/workspace
+    networks:
+      - platform_network
+
+  # 🔥 PHASE 1 LAYER 3: Background Worker - Polls SQS, processes jobs, updates DynamoDB
+  ai_platform_worker:
+    container_name: ai_platform_worker
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["python", "worker.py"]
+    env_file:
+      - .env
+    restart: unless-stopped
     depends_on:
       - localstack
     volumes:

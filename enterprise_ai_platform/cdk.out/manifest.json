@@ -24,6 +24,12 @@
             "data": "PlatformJobsTable96553AE4"
           }
         ],
+        "/AiPlatformInfraStack/PlatformJobsQueue/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "PlatformJobsQueue0C2C25AD"
+          }
+        ],
         "/AiPlatformInfraStack/CDKMetadata/Default": [
           {
             "type": "aws:cdk:logicalId",

@@ -1,30 +1,28 @@
-import os
 import boto3
+from app.config import settings
 
-# 1. Pull settings from the environment
-ENVIRONMENT = os.getenv("ENVIRONMENT", "local")
-AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-
-# 2. Extract endpoints dynamically
-# If the variable is blank or missing (like in real AWS Dev/Prod), it resolves to None
-AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL") or None
+def _get_boto3_kwargs():
+    """Build boto3 kwargs from shared settings for consistent API/worker behavior."""
+    kwargs = {
+        "region_name": settings.AWS_REGION,
+        "endpoint_url": settings.AWS_ENDPOINT_URL,
+    }
+    if settings.ENVIRONMENT == "local":
+        kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID or "mock_key"
+        kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY or "mock_secret"
+    return kwargs
 
 def get_dynamodb_resource():
-    """Returns a high-level DynamoDB Resource object pointing dynamically to the cloud or local container mesh."""
-    
-    # In local development, pass mock keys so boto3 doesn't look for host config files.
-    # In cloud environments, let it fall back to None so IAM execution roles handle authentication.
-    if ENVIRONMENT == "local":
-        aws_access_key = os.getenv("AWS_ACCESS_KEY_ID", "mock_key")
-        aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "mock_secret")
-    else:
-        aws_access_key = None
-        aws_secret_key = None
-
+    """Returns a high-level DynamoDB Resource object pointing dynamically to the stack mesh."""
     return boto3.resource(
         "dynamodb",
-        region_name=AWS_REGION,
-        endpoint_url=AWS_ENDPOINT_URL,
-        aws_access_key_id=aws_access_key,
-        aws_secret_access_key=aws_secret_key
+        **_get_boto3_kwargs()
+    )
+
+# 🔥 NEW: High-level client for our Phase 1 SQS Ingestion Layer
+def get_sqs_resource():
+    """Returns a high-level SQS Resource object pointing dynamically to the stack mesh."""
+    return boto3.resource(
+        "sqs",
+        **_get_boto3_kwargs()
     )
