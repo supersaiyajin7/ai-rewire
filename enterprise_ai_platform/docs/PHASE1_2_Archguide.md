@@ -1,227 +1,654 @@
-The Ultimate, Plain-English Guide to Our Async Document EngineHow to use this document:This is your total, end-to-end reference manual. It is written using zero jargon traps, plain-English analogies, line-by-line breakdowns, and explicit explanations of why every single piece of tech was chosen. If you come back to this project months from now, reading this document will instantly bring you back up to speed for any code review or system design interview.Table of ContentsThe Big Picture: What Problem Are We Solving?The Real-World Analogy: The High-End RestaurantMeet the Cast: Every Technology Explained Like You're 10The Journey of a File: Step-by-Step System FlowDeep-Dive Code Breakdown (Line-by-Line)5.1 The Blueprint: AWS CDK Stack (infra/cdk_stack.py)5.2 The Front Desk: API Ingestion (app/api/v1_jobs.py)5.3 The Invisible Worker: Event Processor (worker.py)Why Did We Build It This Way? (System Design Trade-offs)System Design Interview Q&A (Rookie to Pro Answers)Debugging & Inspection Survival Guide1. The Big Picture: What Problem Are We Solving?Imagine you are building an AI system that takes uploaded documents—like a 500-page medical manual or a 10MB PDF book—and parses them, extracts text, and feeds them into a Machine Learning model.If a user uploads a huge 10MB PDF over the web, processing that PDF (reading pages, scanning text, extracting structure) takes time—sometimes 10 seconds, sometimes 2 minutes.The Naive (Bad) Approach: Synchronous ProcessingIn a standard web app, when a user clicks "Upload":The web browser sends the file to the server.The server receives the file.The server sits there and parses the entire file while the user's browser spins.After 2 minutes, the server finishes and sends back "Done!".Why this fails miserably in production:Timeouts: Web browsers and API gateways usually kill connections if they don't get a response within 30 seconds.Server Freezing: While your server is busy reading that 500-page document, it cannot handle requests from any other users.Crashes (Out Of Memory): If 10 users upload large files at the exact same second, your server loads 10 huge files into RAM simultaneously and crashes hard.The Production-Grade Approach: Asynchronous Event-Driven ArchitectureInstead of making the user wait, we decouple (separate) receiving the file from processing the file:The user uploads the file.The web server saves the file safely in storage, creates a "ticket" (Job ID), puts a message in a line, and immediately returns a response to the user within 100 milliseconds: "Got it! Here is your ticket ID. Check back later."In the background, independent worker programs take tickets from the line, open the file from storage, process it at their own pace, and save the results.2. The Real-World Analogy: The High-End RestaurantTo keep this locked in your mind forever, think of our software as a busy restaurant:[ Customer ] ──► (1. Place Order) ──► [ Waiter ] ──► (2. Put Ingredients in Fridge) ──► [ S3 Storage ]
-                                         │
-                                         ├──► (3. Write Ticket on Board) ───────► [ DynamoDB Table ]
-                                         │
-                                         └──► (4. Hang Ticket on Order Rail) ───► [ SQS Queue ]
-                                                 │
-                                                 ▼
-[ Chef (Worker) ] ◄── (5. Take Ticket) ──────────┘
-       │
-       ├──► (6. Update Ticket to "Cooking") ──────────────────────────────────► [ DynamoDB Table ]
-       ├──► (7. Grab Ingredients from Fridge) ────────────────────────────────► [ S3 Storage ]
-       └──► (8. Finish Dish & Mark "Done") ───────────────────────────────────► [ DynamoDB Table ]
-The Customer (Web User / Client): Comes in and orders a complex meal (uploads a PDF).The Waiter (FastAPI Web Server): Takes the order. Does the waiter stand by your table for 45 minutes watching the food cook? No! The waiter puts the ingredients in the walk-in fridge (S3 Bucket), writes down your order on the status board (DynamoDB Table), hangs a ticket on the kitchen rail (SQS Queue), hands you a buzzer (Job ID), and says "We'll buzz you when it's ready!"The Walk-in Fridge (Amazon S3): Holds big, heavy physical items (raw PDF binary files).The Order Tracking Board (Amazon DynamoDB): A big whiteboard that lists every order status (PENDING, PROCESSING, COMPLETED).The Kitchen Order Rail (Amazon SQS): A paper-ticket holder line. Orders wait here in exact sequence until a chef is free.The Line Chef (Background Worker Process): An independent worker standing in the kitchen. When a new ticket appears on the rail, the chef grabs it, changes the status on the board to PROCESSING, grabs the ingredients out of the fridge, cooks the food, updates the board to COMPLETED, and throws away the paper ticket.3. Meet the Cast: Every Technology Explained Like You're 10Here is every single tool we used in Phase 1 and Phase 2, what it is, and why we need it:1. Docker & Docker ComposeWhat it is: A tool that packages code and its environment into isolated virtual "boxes" called containers.Why we use it: Instead of installing Python, AWS tools, database drivers, and local servers directly onto your Mac/Windows laptop (which leads to "it works on my machine" bugs), Docker runs everything inside identical containers. docker-compose.yml is the master conductor that starts up our API, our Worker, and our local cloud with one single command.2. LocalStackWhat it is: A mock, offline clone of Amazon Web Services (AWS) that runs inside Docker on your computer.Why we use it: Real AWS costs money, requires internet access, and needs API credentials. LocalStack lets us use real AWS Python code locally without spending a single cent or touching the internet.3. AWS CDK (Cloud Development Kit in Python)What it is: Infrastructure as Code (IaC). It allows you to define cloud resources (databases, queues, storage buckets) using pure Python code instead of clicking around in an AWS Web Console.Why we use it: You never want to create databases by hand in production. With CDK, your infrastructure is version-controlled in Git right next to your application code.4. FastAPIWhat it is: A modern, blazing-fast Python web framework for building HTTP API endpoints.Why we use it: It handles incoming web traffic, parses file uploads, auto-generates documentation (/docs), and handles asynchronous background tasks effortlessly.5. python-multipartWhat it is: A Python helper library that allows FastAPI to parse multipart/form-data requests.Why we use it: Standard web APIs send plain text or JSON. When sending raw binary files (like PDFs, images, or audio), browsers wrap them in "multipart" streams. Without python-multipart, FastAPI throws a RuntimeError because it doesn't know how to slice up the raw incoming file stream.6. Amazon S3 (Simple Storage Service)What it is: A massive, virtual file cabinet in the cloud designed to store unlimited files (objects) safely.Why we use it: Databases like PostgreSQL or DynamoDB are meant for short text rows, not multi-megabyte PDF files. Storing files in a database makes it slow and bloated. S3 stores big files cheaply and efficiently.7. Amazon DynamoDBWhat it is: A super-fast NoSQL key-value database.Why we use it: It gives us single-digit millisecond read/write speeds. We use it as our central "State Board" to keep track of every job's lifecycle (job_id, status, s3_key, timestamps).8. Amazon SQS (Simple Queue Service)What it is: A message queue (a waiting line for software messages).Why we use it: It acts as a safety buffer between the API and the Workers. If 1,000 users upload files simultaneously, SQS holds all 1,000 job notifications safely in line without losing a single one. Workers process them one by one at their own pace.4. The Journey of a File: Step-by-Step System FlowHere is the exact lifecycle of an upload from start to finish:[ CLIENT ]             [ FASTAPI API ]            [ AMAZON S3 ]          [ DYNAMODB ]          [ AMAZON SQS ]         [ WORKER ]
-    │                         │                         │                     │                      │                    │
-    ├─── 1. POST /upload ────►│                         │                     │                      │                    │
-    │    (File Payload)       ├─── 2. Stream File ─────►│                     │                      │                    │
-    │                         │    to raw/{job_id}      │                     │                      │                    │
-    │                         ├─── 3. PutItem (status: "PENDING") ───────────►│                      │                    │
-    │                         ├─── 4. SendMessage({"job_id", "s3_key"}) ────────────────────────────►│                    │
-    │◄── 5. HTTP 202 ─────────┤                                               │                      │                    │
-    │    {"job_id": "xyz"}    │                                               │                      │                    │
-    │                         │                                               │                      ├── 6. Receive ─────►│
-    │                         │                                               │                      │   Message          │
-    │                         │                                               │◄── 7. UpdateItem ─────────────────────────┤
-    │                         │                                               │    (PROCESSING)      │                    │
-    │                         │                         │◄────────────────────┼───────────────────────────────────────────┤
-    │                         │                         │ 8. Stream PDF Bytes │                                           │
-    │                         │                         │────────────────────►│                                           │
-    │                         │                                               │◄── 9. UpdateItem ─────────────────────────┤
-    │                         │                                               │    (COMPLETED)       │                    │
-    │                         │                                               │                      ├── 10. Delete ─────┤
-    │                         │                                               │                      │   Message          │
-Client Sends Request: User sends a POST request to /v1/jobs/upload containing a binary PDF file.S3 Upload: FastAPI intercepts the file stream and writes it directly to Amazon S3 under the path raw/<job_id>/<filename>.Database Logging: FastAPI writes a new record into DynamoDB:job_id: "e823bb4a-230d-45b8-8e64-4fde5e23736d"status: "PENDING"s3_key: "raw/e823bb4a-230d-45b8-8e64-4fde5e23736d/book.pdf"Queue Notification: FastAPI formats a quick JSON notification {"job_id": "...", "s3_key": "..."} and pushes it into the SQS queue.Instant Acknowledgment: FastAPI immediately returns HTTP 202 Accepted to the user with their job_id. The entire web request is done in milliseconds!Worker Long Polling: The background worker process, which is constantly listening to SQS, receives the message.Status Update (PROCESSING): Worker calls DynamoDB and updates the job state to PROCESSING.S3 Stream Read: Worker uses the s3_key from the message to open a stream from S3 and download the raw bytes of the file.Work Execution: Worker performs parsing, processing, or data extraction on the file bytes.Status Update (COMPLETED) & Cleanup: Worker updates DynamoDB state to COMPLETED and calls sqs.delete_message to remove the ticket from the queue so no other worker tries to process it again.5. Deep-Dive Code Breakdown (Line-by-Line)Let's look at the three critical Python files we created and explain what every block does.5.1 The Blueprint: AWS CDK Stack (infra/cdk_stack.py)This file defines our infrastructure using pure Python code.Pythonimport os
-from aws_cdk import (
-    Stack,
-    aws_dynamodb as dynamodb,
-    aws_sqs as sqs,
-    aws_s3 as s3,
-    RemovalPolicy
-)
-from constructs import Construct
+# Enterprise AI Platform — Phase 1 & 2 Architecture Guide
 
+> **Purpose**: End-to-end reference for the async document ingestion pipeline (Phases 1–2). Written for onboarding, code reviews, and system-design interviews.
+>
+> **Status**: ✅ Phase 1 (Async Worker Layer) + Phase 2 (S3 Ingestion) — **Complete**
+
+---
+
+## 1. The Big Picture: What Problem Are We Solving?
+
+### The Naive (Synchronous) Approach
+```
+Client → API → [Process 10MB PDF for 30–120s] → Response
+```
+**Why this fails in production:**
+- **Timeouts** — API gateways / load balancers kill connections at ~30s
+- **Thread starvation** — One long request blocks a worker thread; 10 concurrent uploads = 10 stuck threads
+- **OOM crashes** — Large files loaded fully into RAM; concurrent uploads exhaust memory
+
+### The Production-Grade (Async) Approach
+```
+Client → API → S3 (stream) → DynamoDB (ticket) → SQS (notification) → 202 Accepted
+                                                              ↓
+Worker ← SQS (poll) ← DynamoDB (PROCESSING) ← S3 (stream) ← Process → COMPLETED
+```
+**Result**: API returns in **<100ms**; heavy lifting happens in isolated, horizontally-scalable workers.
+
+---
+
+## 2. Real-World Analogy: The High-End Restaurant
+
+| Role | System Component | Responsibility |
+|------|------------------|----------------|
+| **Customer** | API Client | Uploads a document (places an order) |
+| **Waiter** | FastAPI (`POST /v1/jobs/upload`) | Receives file, stores in fridge, writes ticket, hangs ticket on rail, hands buzzer (job_id) |
+| **Walk-in Fridge** | **Amazon S3** | Holds heavy binary blobs (PDFs, images) — cheap, durable, unlimited |
+| **Order Board** | **Amazon DynamoDB** | Single-digit-ms key-value store tracking every job's lifecycle (`PENDING` → `PROCESSING` → `COMPLETED`/`FAILED`) |
+| **Kitchen Rail** | **Amazon SQS** | Durable, ordered message queue; absorbs traffic spikes; delivers tickets to chefs |
+| **Line Chef** | **Background Worker** (`worker.py`) | Polls rail, claims ticket, cooks (processes), updates board, clears ticket |
+
+> **Key insight**: The waiter *never cooks*. The chef *never talks to customers*. Decoupling = resilience + horizontal scale.
+
+---
+
+## 3. Technology Stack (Plain English)
+
+| Tool | What It Is | Why We Use It |
+|------|------------|---------------|
+| **Docker & Docker Compose** | Container orchestration | Identical local/CI/prod environments; one command spins up everything |
+| **LocalStack** | Local AWS mock (S3, DynamoDB, SQS, etc.) | Zero cloud cost, zero network latency, full AWS SDK compatibility |
+| **AWS CDK (Python)** | Infrastructure as Code | Version-controlled, reproducible infrastructure; no ClickOps |
+| **FastAPI** | Async Python web framework | Native `async`/`await`, auto OpenAPI docs, Pydantic validation |
+| **python-multipart** | Multipart form parser | Required for `UploadFile`; without it FastAPI raises `RuntimeError` |
+| **Amazon S3** | Object storage | Offloads large blobs from DB; 5TB/object, virtually unlimited |
+| **Amazon DynamoDB** | Serverless NoSQL key-value | Sub-ms latency, pay-per-request, perfect for job metadata |
+| **Amazon SQS** | Managed message queue | Durable buffer between API and workers; visibility timeout = auto-retry on crash |
+
+---
+
+## 4. File Journey: End-to-End Flow
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as FastAPI
+    participant S3
+    participant DB as DynamoDB
+    participant SQS
+    participant Worker
+
+    Client->>API: POST /v1/jobs/upload (multipart/file)
+    API->>S3: PutObject(raw/{job_id}/{filename})
+    API->>DB: PutItem(job_id, PENDING, s3_key, metadata)
+    API->>SQS: SendMessage({job_id, s3_bucket, s3_key})
+    API-->>Client: 202 Accepted {job_id, status: PENDING}
+    
+    loop Long Poll (20s wait)
+        Worker->>SQS: ReceiveMessage(WaitTimeSeconds=20)
+    end
+    SQS-->>Worker: {job_id, s3_bucket, s3_key, receipt_handle}
+    Worker->>DB: UpdateItem(job_id, PROCESSING)
+    Worker->>S3: GetObject(s3_bucket, s3_key) → stream bytes
+    Worker->>Worker: Process (parse, extract, infer)
+    Worker->>DB: UpdateItem(job_id, COMPLETED, result_metadata)
+    Worker->>SQS: DeleteMessage(receipt_handle)
+```
+
+### Step-by-Step
+
+| Step | Actor | Action | Artifact |
+|------|-------|--------|----------|
+| 1 | Client | `POST /v1/jobs/upload` with file | HTTP request |
+| 2 | API | Generate `job_id = uuid4()` | `str` |
+| 3 | API | Stream upload to S3: `raw/{job_id}/{filename}` | S3 object |
+| 4 | API | Write DynamoDB item: `job_id`, `PENDING`, `s3_key`, `filename`, `content_type`, `created_at` | DB record |
+| 5 | API | Push SQS message: `{job_id, s3_bucket, s3_key, task_payload}` | Queue message |
+| 6 | API | Return `202 Accepted` + `JobResponse` | JSON |
+| 7 | Worker | Long-poll SQS (20s wait, 1 msg at a time) | Message |
+| 8 | Worker | Parse & validate message body | `JobMessage` |
+| 9 | Worker | `UpdateItem → PROCESSING` | DB update |
+| 10 | Worker | Stream `GetObject` from S3 into memory | `bytes` |
+| 11 | Worker | **Process** (Phase 2: sleep 2s; Phase 3: Bedrock LLM) | Result |
+| 12 | Worker | `UpdateItem → COMPLETED` + result metadata | DB update |
+| 13 | Worker | `DeleteMessage` from SQS | Queue cleanup |
+
+---
+
+## 5. Deep-Dive Code Breakdown
+
+### 5.1 Infrastructure: `infra/cdk_stack.py`
+
+```python
 class AiPlatformInfraStack(Stack):
-
-    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
+    def __init__(self, scope, construct_id, **kwargs):
         super().__init__(scope, construct_id, **kwargs)
 
-        # 1. PULL CONFIGURATION FROM ENVIRONMENT VARIABLES
-        # Reads target names or defaults to clean fallback strings
-        target_table_name = os.getenv("DYNAMODB_TABLE_NAME", "platform_jobs")
-        target_queue_name = os.getenv("AWS_SQS_QUEUE_NAME", "platform-job-queue")
-        target_bucket_name = os.getenv("AWS_S3_BUCKET_NAME", "platform-document-ingestion-storage")
+        # Names from env (with sensible defaults)
+        table_name  = os.getenv("DYNAMODB_TABLE_NAME", "platform_jobs")
+        queue_name  = os.getenv("AWS_SQS_QUEUE_NAME", "platform-job-queue")
+        bucket_name = os.getenv("AWS_S3_BUCKET_NAME", "platform-document-ingestion-storage")
 
-        # 2. DEFINE THE DYNAMODB STATE TABLE
+        # 1️⃣ DynamoDB — Job state table
         self.jobs_table = dynamodb.Table(
             self, "PlatformJobsTable",
-            table_name=target_table_name,
-            # Partition Key (Primary Key) uniquely identifies each item in DynamoDB
-            partition_key=dynamodb.Attribute(
-                name="job_id", 
-                type=dynamodb.AttributeType.STRING
-            ),
-            # PAY_PER_REQUEST means auto-scaling serverless mode (no provisioned capacity limit)
+            table_name=table_name,
+            partition_key=dynamodb.Attribute(name="job_id", type=dynamodb.AttributeType.STRING),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            # RemovalPolicy.DESTROY means if we tear down the stack, delete the table (great for dev)
-            removal_policy=RemovalPolicy.DESTROY
+            removal_policy=RemovalPolicy.DESTROY,  # Dev-friendly cleanup
         )
 
-        # 3. DEFINE THE SQS INGESTION QUEUE
+        # 2️⃣ SQS — Ingestion queue
         self.jobs_queue = sqs.Queue(
             self, "PlatformJobsQueue",
-            queue_name=target_queue_name,
-            removal_policy=RemovalPolicy.DESTROY
+            queue_name=queue_name,
+            removal_policy=RemovalPolicy.DESTROY,
+            # VisibilityTimeout defaults to 30s — perfect for worker crash recovery
         )
 
-        # 4. DEFINE THE S3 STORAGE BUCKET
+        # 3️⃣ S3 — Document storage bucket
         self.document_bucket = s3.Bucket(
             self, "PlatformDocumentStorageBucket",
-            bucket_name=target_bucket_name,
-            removal_policy=RemovalPolicy.DESTROY
+            bucket_name=bucket_name,
+            removal_policy=RemovalPolicy.DESTROY,
+            auto_delete_objects=True,  # Clean up objects on stack destroy
         )
-5.2 The Front Desk: API Ingestion (app/api/v1_jobs.py)This endpoint receives the document from the user and orchestrates Phase 2 ingestion.Pythonimport uuid
-import json
-from datetime import datetime
-from fastapi import APIRouter, UploadFile, File, status, HTTPException
-import boto3
+```
 
-router = APIRouter()
+**Key design decisions:**
+- `PAY_PER_REQUEST` → no capacity planning, scales to zero cost when idle
+- `RemovalPolicy.DESTROY` + `auto_delete_objects` → `cdk destroy` cleans everything (dev only!)
+- All names configurable via env vars → same stack deploys to dev/staging/prod with different names
 
-# Initialize AWS SDK (boto3) clients pointing to LocalStack endpoint
-s3_client = boto3.client('s3', endpoint_url="http://localstack:4566")
-dynamodb = boto3.resource('dynamodb', endpoint_url="http://localstack:4566")
-sqs_client = boto3.client('sqs', endpoint_url="http://localstack:4566")
+---
 
-table = dynamodb.Table("platform_jobs")
+### 5.2 API Layer: `app/api/v1_jobs.py`
 
-@router.post("/upload", status_code=status.HTTP_202_ACCEPTED)
-async def upload_document(file: UploadFile = File(...)):
-    # 1. Generate a unique job identifier (UUIDv4)
-    job_id = str(uuid.uuid4())
-    
-    # 2. Construct a predictable S3 storage key path
-    s3_key = f"raw/{job_id}/{file.filename}"
+```python
+router = APIRouter(prefix="/v1/jobs", tags=["Job Lifecycle Engine"])
 
-    try:
-        # 3. Stream binary object straight to S3 bucket
-        s3_client.upload_fileobj(
-            file.file,
-            "platform-document-ingestion-storage",
-            s3_key
-        )
+@router.post("", status_code=status.HTTP_202_ACCEPTED, response_model=JobResponse)
+def trigger_batch_job(request: JobCreateRequest):
+    """JSON payload ingestion (Phase 1)."""
+    if not request.payloads:
+        raise HTTPException(400, "Payload collection cannot be empty.")
+    return get_job_repo().create(request)
 
-        # 4. Record initial job state metadata in DynamoDB
-        table.put_item(
-            Item={
-                "job_id": job_id,
-                "status": "PENDING",
-                "filename": file.filename,
-                "s3_key": s3_key,
-                "created_at": datetime.utcnow().isoformat()
-            }
-        )
 
-        # 5. Get queue URL and dispatch event payload to SQS
-        queue_url = sqs_client.get_queue_url(QueueName="platform-job-queue")["QueueUrl"]
-        
-        sqs_client.send_message(
-            QueueUrl=queue_url,
+@router.post("/upload", status_code=status.HTTP_202_ACCEPTED, response_model=JobResponse)
+async def trigger_file_job(file: UploadFile = File(...)):
+    """Multipart file ingestion (Phase 2)."""
+    if not file.filename:
+        raise HTTPException(400, "Uploaded file must have a valid filename.")
+
+    file_bytes = await file.read()  # Stream into memory (fine for <10MB; Phase 3: stream to S3 directly)
+    return get_job_repo().create_from_file(
+        filename=file.filename,
+        file_content=file_bytes,
+        content_type=file.content_type or "application/octet-stream",
+    )
+```
+
+**Why `202 Accepted`?**  
+HTTP semantics: *"The request has been accepted for processing, but the processing has not been completed."* Client polls `GET /v1/jobs/{job_id}` for status.
+
+---
+
+### 5.3 Core Schemas: `app/core/schemas.py`
+
+```python
+class JobStatus(str, Enum):
+    PENDING     = "pending"
+    PROCESSING  = "processing"
+    COMPLETED   = "completed"
+    FAILED      = "failed"
+
+
+class JobCreateRequest(BaseModel):
+    payloads: List[str] = Field(..., description="Text payloads for async processing")
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class JobResponse(BaseModel):
+    job_id: str
+    status: JobStatus
+    created_at: float
+    updated_at: float
+    error_message: Optional[str] = None
+```
+
+---
+
+### 5.4 Repository (Business Logic): `app/infrastructure/repository.py`
+
+```python
+class DynamoJobRepository:
+    def __init__(self):
+        self.table = get_dynamodb_resource().Table(settings.DYNAMODB_TABLE_NAME)
+        self.sqs    = get_sqs_resource()
+        self.s3     = get_s3_client()
+        self.queue_url = self.sqs.get_queue_url(QueueName=settings.AWS_SQS_QUEUE_NAME)["QueueUrl"]
+        self.bucket   = settings.AWS_S3_BUCKET_NAME
+
+    # ── Phase 1: JSON payload ──────────────────────────────────────
+    def create(self, request: JobCreateRequest) -> JobResponse:
+        job_id = str(uuid.uuid4())
+        now = time.time()
+
+        item = {
+            "job_id": job_id,
+            "status": JobStatus.PENDING.value,
+            "payloads": request.payloads,
+            "metadata": request.metadata or {},
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.table.put_item(Item=item)
+
+        # Fire-and-forget to SQS
+        self.sqs_client.send_message(
+            QueueUrl=self.queue_url,
             MessageBody=json.dumps({
                 "job_id": job_id,
-                "s3_key": s3_key
-            })
+                "task_payload": request.payloads,
+                "metadata": request.metadata or {},
+            }),
+        )
+        return JobResponse(job_id=job_id, status=JobStatus.PENDING, created_at=now, updated_at=now)
+
+    # ── Phase 2: File upload ───────────────────────────────────────
+    def create_from_file(self, filename: str, file_content: bytes, content_type: str) -> JobResponse:
+        job_id = str(uuid.uuid4())
+        now = time.time()
+        s3_key = f"raw/{job_id}/{filename}"
+
+        # 1. Stream to S3
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=s3_key,
+            Body=file_content,
+            ContentType=content_type,
         )
 
-        # 6. Return immediate 202 response to client
-        return {
+        # 2. Record in DynamoDB
+        item = {
             "job_id": job_id,
-            "status": "PENDING",
-            "message": "Document successfully queued for processing."
+            "status": JobStatus.PENDING.value,
+            "filename": filename,
+            "content_type": content_type,
+            "s3_key": s3_key,
+            "metadata": {"s3_bucket": self.bucket, "s3_key": s3_key},
+            "created_at": now,
+            "updated_at": now,
         }
+        self.table.put_item(Item=item)
 
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to ingest document: {str(e)}"
+        # 3. Notify worker via SQS
+        self.sqs_client.send_message(
+            QueueUrl=self.queue_url,
+            MessageBody=json.dumps({
+                "job_id": job_id,
+                "s3_bucket": self.bucket,
+                "s3_key": s3_key,
+                "task_payload": [filename],  # Back-compat for worker parser
+                "metadata": {"filename": filename, "content_type": content_type},
+            }),
         )
-5.3 The Invisible Worker: Event Processor (worker.py)This script runs indefinitely in a separate container, consuming tasks off the queue.Pythonimport time
-import json
-import boto3
+        return JobResponse(job_id=job_id, status=JobStatus.PENDING, created_at=now, updated_at=now)
 
-# Connect to LocalStack services
-s3_client = boto3.client('s3', endpoint_url="http://localstack:4566")
-dynamodb = boto3.resource('dynamodb', endpoint_url="http://localstack:4566")
-sqs_client = boto3.client('sqs', endpoint_url="http://localstack:4566")
+    # ── Shared: Status lookup ──────────────────────────────────────
+    def get_job(self, job_id: str) -> Optional[Dict]:
+        resp = self.table.get_item(Key={"job_id": job_id})
+        return resp.get("Item")
+```
 
-table = dynamodb.Table("platform_jobs")
+---
 
-def update_job_status(job_id: str, new_status: str):
-    """Updates the status attribute of a specific job in DynamoDB."""
+### 5.5 Worker: `worker.py`
+
+```python
+def process_job_payload(message_body: Dict) -> Tuple[str, Dict]:
+    """
+    Parse SQS message → extract S3 coords → stream object → do work → return result_metadata.
+    Returns (job_id, result_metadata).
+    """
+    job_id   = message_body["job_id"]
+    s3_bucket = message_body["s3_bucket"]
+    s3_key    = message_body["s3_key"]
+
+    # Stream download (memory-efficient for large files)
+    obj = s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
+    file_bytes = obj["Body"].read()
+
+    # ── PHASE 2: Simulated work (Phase 3 = Bedrock call here) ──
+    time.sleep(2)  # Placeholder for PDF parsing / LLM inference
+
+    result_metadata = {
+        "processed_bytes": len(file_bytes),
+        "s3_key": s3_key,
+        "completed_at": time.time(),
+    }
+    return job_id, result_metadata
+
+
+def update_job_status(job_id: str, status: JobStatus, result_metadata: Optional[Dict] = None, error: Optional[str] = None):
+    """Single source of truth for status transitions."""
+    update_expr = "SET #s = :status, updated_at = :now"
+    expr_names  = {"#s": "status"}  # 'status' is reserved in DynamoDB
+    expr_values = {":status": status.value, ":now": time.time()}
+
+    if result_metadata:
+        update_expr += ", result_metadata = :meta"
+        expr_values[":meta"] = result_metadata
+    if error:
+        update_expr += ", error_message = :err"
+        expr_values[":err"] = error
+
     table.update_item(
         Key={"job_id": job_id},
-        UpdateExpression="SET #s = :status_val, updated_at = :time_val",
-        ExpressionAttributeNames={"#s": "status"},  # 'status' is a reserved word in DynamoDB
-        ExpressionAttributeValues={
-            ":status_val": new_status,
-            ":time_val": time.strftime("%Y-%m-%dT%H:%M:%SZ")
-        }
+        UpdateExpression=update_expr,
+        ExpressionAttributeNames=expr_names,
+        ExpressionAttributeValues=expr_values,
     )
+
 
 def start_worker():
     print("🚀 Worker Active | Polling SQS queue for incoming jobs...")
-    
-    # Resolve Queue URL
-    queue_url = sqs_client.get_queue_url(QueueName="platform-job-queue")["QueueUrl"]
+    queue_url = sqs_client.get_queue_url(QueueName=settings.AWS_SQS_QUEUE_NAME)["QueueUrl"]
 
     while True:
-        # 1. Long Poll SQS for messages (Wait up to 20s if queue is empty)
-        response = sqs_client.receive_message(
+        # Long-poll: wait up to 20s for a message (saves CPU + cost)
+        resp = sqs_client.receive_message(
             QueueUrl=queue_url,
             MaxNumberOfMessages=1,
-            WaitTimeSeconds=20
+            WaitTimeSeconds=20,
+            VisibilityTimeout=30,  # If worker crashes, message reappears after 30s
         )
 
-        messages = response.get("Messages", [])
-        
-        if not messages:
-            continue  # No messages received, loop back and poll again
+        for msg in resp.get("Messages", []):
+            receipt = msg["ReceiptHandle"]
+            try:
+                body = json.loads(msg["Body"])
+                job_id = body["job_id"]
 
-        for message in messages:
-            # 2. Extract JSON body
-            body = json.loads(message["Body"])
-            job_id = body["job_id"]
-            s3_key = body["s3_key"]
+                print(f"📋 Processing job_id: {job_id}")
 
-            print(f"📋 Processing job_id: {job_id}")
+                # 1️⃣ Mark PROCESSING
+                update_job_status(job_id, JobStatus.PROCESSING)
 
-            # 3. Transition State -> PROCESSING
-            update_job_status(job_id, "PROCESSING")
+                # 2️⃣ Do the work
+                job_id, result_meta = process_job_payload(body)
 
-            # 4. Fetch binary object stream from S3 Storage Grid
-            s3_object = s3_client.get_object(
-                Bucket="platform-document-ingestion-storage",
-                Key=s3_key
-            )
-            file_bytes = s3_object["Body"].read()
+                # 3️⃣ Mark COMPLETED
+                update_job_status(job_id, JobStatus.COMPLETED, result_metadata=result_meta)
+                print(f"✅ Completed job_id: {job_id}")
 
-            print(f"📄 Retrieved document: {s3_key} ({len(file_bytes)} bytes)")
+            except Exception as e:
+                # Mark FAILED — message NOT deleted → visibility timeout → retry → DLQ (Phase 4)
+                job_id = body.get("job_id", "unknown")
+                update_job_status(job_id, JobStatus.FAILED, error=str(e))
+                print(f"❌ Failed job_id: {job_id} | {e}")
+                continue  # Skip delete → message returns to queue after visibility timeout
 
-            # 5. Simulated Workload (In Phase 3, this becomes our LLM Parser Engine)
-            time.sleep(2)
+            # 4️⃣ Success → remove from queue
+            sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
 
-            # 6. Transition State -> COMPLETED
-            update_job_status(job_id, "COMPLETED")
-            print(f"✅ Status updated -> COMPLETED for job_id: {job_id}")
-
-            # 7. Delete message from queue so it is never processed again
-            sqs_client.delete_message(
-                QueueUrl=queue_url,
-                ReceiptHandle=message["ReceiptHandle"]
-            )
 
 if __name__ == "__main__":
     start_worker()
-6. Why Did We Build It This Way? (System Design Trade-offs)When explaining this project in an interview, senior engineers want to know why you made specific architectural choices. Use this table as your mental cheat sheet:Architectural ChoiceWhy we did itWhat would happen if we didn'tHTTP 202 AcceptedTells the caller the job was accepted into a queue, not finished.Returning 200 OK tricks clients into thinking processing is complete when it hasn't even started.SQS Long Polling (WaitTimeSeconds=20)Keeps the request open for 20s if the queue is empty, returning instantly when a message arrives.Short polling sends constant requests every millisecond, burning 100% CPU and flooding local network ports.Separate S3 and DynamoDBUses S3 for heavy binaries and DynamoDB for lightweight metadata.Putting raw PDF bytes into DynamoDB hits its 400 KB item limit and incurs high database costs.Deleting SQS Messages After ProcessingEnsures a message is removed only after a worker successfully completes the job.If you delete the message before processing and the worker container crashes, the file is lost forever.IaC via AWS CDKKeeps infrastructure fully codified, versioned, and reproducible across environments.Manual configuration via cloud UI consoles leads to human error and environment mismatches.7. System Design Interview Q&A (Rookie to Pro Answers)Q1: "What happens if 10,000 users upload files at the exact same second?"Answer:"Our architecture scales smoothly under heavy load because it is fully decoupled:API Layer: FastAPI streams incoming files directly to S3 and writes a tiny message to SQS. It doesn't perform heavy computing, so it handles thousands of incoming HTTP requests per second easily.Buffer Layer: SQS acts as a shock absorber. It absorbs all 10,000 messages instantly without dropping any.Worker Layer: Workers process messages off SQS at a controlled rate. If the queue builds up, we can spin up additional worker containers (horizontal auto-scaling) to drain the queue faster without putting extra load on the API."Q2: "What happens if a worker crashes while processing a document?"Answer:"SQS handles worker failures gracefully using a Visibility Timeout.When a worker receives a message, SQS makes that message invisible to other workers for a set period (e.g., 30 seconds).If the worker processes the file successfully, it explicitly calls delete_message.If the worker container crashes midway through, it never calls delete_message. Once the 30-second Visibility Timeout expires, the message automatically becomes visible in the queue again, and a healthy worker picks it up and retries."Q3: "Why did you use SQS instead of Redis or Celery?"Answer:"While Celery with Redis is popular in Python setups, SQS provides managed cloud durability. Redis stores queues in memory by default—if the Redis node crashes, unprocessed messages can be lost. SQS replicates messages across multiple Availability Zones natively, requires zero broker server maintenance, and integrates seamlessly into AWS IAM security and infrastructure."8. Debugging & Inspection Survival GuideIf you ever restart your local environment and want to verify or inspect what is happening inside your local cloud, use these quick commands:1. View DynamoDB Jobs Table in Web BrowserOpen your browser to:👉 http://localhost:8001 (Runs dynamodb-admin UI)You can inspect item rows, view job_id keys, check timestamps, and monitor status state transitions (PENDING -> PROCESSING -> COMPLETED) in real time.2. View Raw S3 Objects via Terminal (AWS CLI)List all files currently saved inside your local S3 bucket:Bashaws --endpoint-url=http://localhost:4566 s3 ls s3://platform-document-ingestion-storage/ --recursive
-3. Download / View S3 Object in Web BrowserTo view or download an uploaded PDF file directly, paste the S3 key path into your browser:Plaintexthttp://localhost:4566/platform-document-ingestion-storage/raw/<JOB_ID>/<FILENAME>.pdf
-4. Inspect Real-Time Worker LogsTo watch the background worker process messages off SQS:Bashdocker compose logs -f ai_platform_worker
-This document contains the complete architectural foundation for Phase 1 and Phase 2. Save this .md file in your repository as docs/PHASE_1_AND_2_ARCHITECTURAL_GUIDE.md for future reference!
+```
+
+**Resilience patterns baked in:**
+- **Visibility timeout (30s)** → Auto-retry on worker crash
+- **Delete only on success** → At-least-once delivery
+- **Error captured in DynamoDB** → `FAILED` status + `error_message` for debugging
+- **Long-poll (20s)** → Near-zero empty-receive cost
+
+---
+
+## 6. Configuration & Shared Clients
+
+### `app/config.py` — Single Source of Truth
+```python
+class Settings(BaseSettings):
+    ENVIRONMENT: str = "local"
+    AWS_REGION: str = "us-east-1"
+    AWS_ENDPOINT_URL: Optional[str] = None          # LocalStack endpoint
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    DYNAMODB_TABLE_NAME: str = "platform_jobs"
+    AWS_SQS_QUEUE_NAME: str = "platform-job-queue"
+    AWS_S3_BUCKET_NAME: str = "platform-document-ingestion-storage"
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+settings = Settings()  # Singleton
+```
+
+### `app/infrastructure/aws/client.py` — Consistent Boto3 Factories
+```python
+def _get_boto3_kwargs() -> Dict:
+    kwargs = {"region_name": settings.AWS_REGION, "endpoint_url": settings.AWS_ENDPOINT_URL}
+    if settings.ENVIRONMENT == "local":
+        kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID or "mock_key"
+        kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY or "mock_secret"
+    return kwargs
+
+
+def get_dynamodb_resource(): return boto3.resource("dynamodb", **_get_boto3_kwargs())
+def get_sqs_resource():      return boto3.resource("sqs",      **_get_boto3_kwargs())
+def get_s3_client():         return boto3.client("s3",         **_get_boto3_kwargs())
+def get_s3_resource():       return boto3.resource("s3",       **_get_boto3_kwargs())
+```
+
+**Why this matters:** One config switch (`ENVIRONMENT=local` vs `prod`) flips between LocalStack and real AWS — zero code changes.
+
+---
+
+## 7. Docker Compose: `docker-compose.yml`
+
+```yaml
+services:
+  localstack:
+    image: localstack/localstack:latest
+    container_name: localstack_main
+    ports:
+      - "127.0.0.1:4566:4566"
+      - "127.0.0.1:4510-4559:4510-4559"
+    environment:
+      - AWS_DEFAULT_REGION=us-east-1
+      - EDGE_PORT=4566
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [platform_network]
+
+  api_platform:
+    build:
+      context: .
+      dockerfile: Dockerfile          # Single Dockerfile for both API & worker
+    container_name: ai_platform_app
+    ports: ["127.0.0.1:8000:8000"]
+    environment:
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - ENVIRONMENT=local
+    depends_on: [localstack]
+    volumes: [".:/workspace"]
+    networks: [platform_network]
+
+  api_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile          # Same image, different entrypoint
+    container_name: ai_platform_worker
+    command: python worker.py
+    environment:
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - ENVIRONMENT=local
+    depends_on: [localstack]
+    volumes: [".:/workspace"]
+    networks: [platform_network]
+
+  localstack_gui:
+    image: aaronshaf/dynamodb-admin:latest
+    container_name: localstack_dashboard_ui
+    ports: ["127.0.0.1:8001:8001"]
+    environment:
+      - DYNAMO_ENDPOINT=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=mock_id
+      - AWS_SECRET_ACCESS_KEY=mock_secret
+    depends_on: [localstack]
+    networks: [platform_network]
+
+networks:
+  platform_network:
+    name: platform_architecture_net
+
+volumes:
+  localstack_data:
+```
+
+> **Note**: Both API and worker use the same `Dockerfile` (multi-stage or single-stage). The worker container overrides `command: python worker.py`.
+
+---
+
+## 8. System Design Trade-offs (Interview Cheat Sheet)
+
+| Decision | Why | Alternative & Why Not |
+|----------|-----|----------------------|
+| **HTTP 202 Accepted** | Honest semantics: "accepted for processing" ≠ "done" | `200 OK` lies to client; `201 Created` implies resource exists |
+| **SQS Long Poll (20s)** | Eliminates empty-receive CPU spin; costs ~$0.01/month | Short poll (1s) = 86K req/day = wasted $ + latency |
+| **S3 + DynamoDB separate** | S3 for blobs (unlimited, cheap); DynamoDB for metadata (fast, queryable) | Putting PDFs in DynamoDB hits 400KB item limit + high RCU/WCU |
+| **Delete SQS *after* success** | Crash mid-work → visibility timeout expires → message redelivered → retry | Delete before work → crash = lost job forever |
+| **CDK (Python) for IaC** | Version-controlled, reviewable, testable, diffable | Console ClickOps = drift, no audit trail, not reproducible |
+| **Single Dockerfile, dual entrypoints** | Shared deps, smaller image, consistent runtime | Separate `Dockerfile.worker` = divergence risk |
+
+---
+
+## 9. System Design Interview Q&A
+
+### Q1: "10,000 users upload files at the same second. What happens?"
+> **API**: FastAPI streams each upload to S3 + writes tiny DynamoDB item + sends SQS message. All non-blocking. Handles 10K req/s easily.  
+> **SQS**: Absorbs all 10K messages instantly (virtually unlimited throughput).  
+> **Workers**: Process at their own pace. Add more worker containers (ECS Fargate / K8s HPA) to drain queue faster. Zero impact on API latency.
+
+### Q2: "Worker crashes halfway through a 200-page PDF. What happens?"
+> SQS **visibility timeout** (30s default) protects the message. Worker never calls `DeleteMessage`. After 30s, message becomes visible again. Healthy worker picks it up, reprocesses from start. Idempotency key = `job_id` (DynamoDB upsert is idempotent).
+
+### Q3: "Why SQS over Redis/Celery?"
+| | SQS | Redis + Celery |
+|--|-----|----------------|
+| **Durability** | Replicated across 3 AZs | In-memory (unless AOF/RDB + replicas) |
+| **Ops** | Zero broker management | Run/maintain Redis cluster |
+| **IAM** | Native AWS permissions | Custom auth |
+| **Cost** | $0.40/million requests | EC2 + Redis instance hours |
+| **Backpressure** | Built-in (queue depth metrics) | Custom |
+
+### Q4: "How do you handle duplicate processing?"
+> **At-least-once delivery** is SQS standard. Deduplication via `job_id` as DynamoDB primary key: `PutItem` with same `job_id` overwrites (idempotent). Worker checks current status before processing (optional optimization).
+
+### Q5: "How would you add priority processing?"
+> **Option A**: Separate priority queue + priority workers.  
+> **Option B**: SQS FIFO queue with `MessageGroupId` = priority tier.  
+> **Option C**: Priority field in message; workers peek + re-queue (complex, not recommended).
+
+---
+
+## 10. Debugging & Inspection Survival Guide
+
+### 10.1 DynamoDB Admin UI
+```bash
+open http://localhost:8001
+# Browse items, watch status transitions in real time
+```
+
+### 10.2 S3 via AWS CLI (LocalStack)
+```bash
+# List all objects
+aws --endpoint-url=http://localhost:4566 s3 ls s3://platform-document-ingestion-storage/ --recursive
+
+# Download a file
+aws --endpoint-url=http://localhost:4566 s3 cp s3://platform-document-ingestion-storage/raw/<JOB_ID>/<FILENAME>.pdf ./local.pdf
+```
+
+### 10.3 S3 via Browser (Direct)
+```
+http://localhost:4566/platform-document-ingestion-storage/raw/<JOB_ID>/<FILENAME>.pdf
+```
+
+### 10.4 Worker Logs
+```bash
+docker compose logs -f ai_platform_worker
+```
+
+### 10.5 API Health & Docs
+```bash
+curl http://localhost:8000/health
+open http://localhost:8000/docs  # Swagger UI
+```
+
+### 10.6 Submit a Test Upload
+```bash
+curl -X POST http://localhost:8000/v1/jobs/upload \
+  -F "file=@./sample.pdf" \
+  -H "accept: application/json"
+# → {"job_id": "...", "status": "pending", "created_at": ..., "updated_at": ...}
+```
+
+---
+
+## 11. Current Implementation Status
+
+| Phase | Feature | Status | Location |
+|-------|---------|--------|----------|
+| **1** | Async worker layer (SQS + DynamoDB) | ✅ Done | `worker.py`, `repository.py`, `cdk_stack.py` |
+| **1** | JSON payload endpoint (`POST /v1/jobs`) | ✅ Done | `v1_jobs.py::trigger_batch_job` |
+| **2** | S3 document ingestion bucket | ✅ Done | `cdk_stack.py`, `config.py` |
+| **2** | Multipart upload endpoint (`POST /v1/jobs/upload`) | ✅ Done | `v1_jobs.py::trigger_file_job` |
+| **2** | S3 key pattern `raw/{job_id}/{filename}` | ✅ Done | `repository.py::create_from_file` |
+| **2** | Worker streams from S3 | ✅ Done | `worker.py::process_job_payload` |
+| **2** | File metadata in DynamoDB | ✅ Done | `metadata` field with `s3_bucket`, `s3_key` |
+| **3** | **Bedrock / LLM integration** | 🔲 Planned | — |
+| **4** | **Dead-letter queue (DLQ)** | 🔲 Planned | — |
+| **4** | **Retry policy / max receives** | 🔲 Planned | — |
+| **4** | **Structured logging / metrics / tracing** | 🔲 Planned | — |
+
+---
+
+## 12. Next Steps (Phase 3 & 4 Roadmap)
+
+### Phase 3: AI Intelligence Engine (Bedrock)
+1. Add `boto3.client("bedrock-runtime")` factory in `client.py`
+2. Create `app/ai/bedrock_client.py` with prompt templates
+3. Replace `time.sleep(2)` in `worker.py` with actual inference call
+4. Store structured LLM output in `result_metadata` (JSON-serializable)
+5. Add model config via `Settings` (model ID, temperature, max tokens)
+
+### Phase 4: Production Resilience
+1. **CDK**: Add `platform-job-dlq` queue + `redrive_policy` on main queue (`maxReceiveCount=3`)
+2. **Worker**: On `FAILED` after max retries, publish to DLQ (or let SQS auto-DLQ)
+3. **Observability**: Structured JSON logs → CloudWatch / Loki; Prometheus metrics (`jobs_processed_total`, `job_duration_seconds`); OpenTelemetry traces
+4. **Idempotency**: Add `processed_at` guard in worker to skip re-processing completed jobs
+
+---
+
+## 13. File Index (Quick Reference)
+
+```
+enterprise_ai_platform/
+├── infra/
+│   └── cdk_stack.py              # CDK: DynamoDB + SQS + S3
+├── app/
+│   ├── api/
+│   │   └── v1_jobs.py            # POST /v1/jobs, POST /v1/jobs/upload
+│   ├── config.py                 # Pydantic Settings (env-driven)
+│   ├── core/
+│   │   └── schemas.py            # Pydantic models (JobStatus, JobResponse, ...)
+│   ├── infrastructure/
+│   │   ├── aws/
+│   │   │   └── client.py         # Shared boto3 resource/client factories
+│   │   └── repository.py         # DynamoJobRepository (all business logic)
+├── worker.py                     # Long-poll SQS → process → update DB
+├── docker-compose.yml            # 4-service local stack
+├── Dockerfile                    # Shared API + worker image
+├── requirements.txt              # Python deps
+└── docs/
+    └── PHASE1_2_Archguide.md     # ← You are here
+```
+
+---
+
+*Document maintained alongside code. Update this file when architecture evolves.*
