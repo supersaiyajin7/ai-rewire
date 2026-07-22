@@ -30,6 +30,12 @@
             "data": "PlatformJobsQueue0C2C25AD"
           }
         ],
+        "/AiPlatformInfraStack/PlatformDocumentStorageBucket/Resource": [
+          {
+            "type": "aws:cdk:logicalId",
+            "data": "PlatformDocumentStorageBucketB75C9950"
+          }
+        ],
         "/AiPlatformInfraStack/CDKMetadata/Default": [
           {
             "type": "aws:cdk:logicalId",

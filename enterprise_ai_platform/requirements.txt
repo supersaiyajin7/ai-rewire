@@ -5,3 +5,4 @@ boto3==1.34.60
 aws-cdk-lib==2.133.0
 constructs==10.3.0
 pydantic_settings==2.2.1
+python-multipart>=0.0.9

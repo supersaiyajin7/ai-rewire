@@ -35,10 +35,21 @@
     "aws:cdk:path": "AiPlatformInfraStack/PlatformJobsQueue/Resource"
    }
   },
+  "PlatformDocumentStorageBucketB75C9950": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "BucketName": "platform-document-ingestion-storage"
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "AiPlatformInfraStack/PlatformDocumentStorageBucket/Resource"
+   }
+  },
   "CDKMetadata": {
    "Type": "AWS::CDK::Metadata",
    "Properties": {
-    "Analytics": "v2:deflate64:H4sIAAAAAAAA/zXITQ7CIBBA4bN0P4wi8QReoK3dGwoY6Q+kDMQ0hLvb0Lh6L98NuRB4beSXmNIzW+yI+RmlmuGgV9a7k6vXBw5yXAw83q5OAdoIc5dMqlinFOgN+RRUtf8XaPf48e4ikHPk92Yia1lILtrVYH/2B492PISJAAAA"
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/zXKQQ7CIBCF4bN0D6NIvIBeQKt7Q2GMSAtpYWIawt1FGlfvz5d3ACEl7Dv1iVwbx0c7QL4lpR2r9Mhm9WoKpuJdDSOy89O3KCzOEfKVkBq2qCghn0g7TD/cqhTWYwy06Pb8d2GXNb2C30kQAsSxe0dr+UI+2Qmh3/YLFg9ZPJ8AAAA="
    },
    "Metadata": {
     "aws:cdk:path": "AiPlatformInfraStack/CDKMetadata/Default"

@@ -26,3 +26,24 @@ def get_sqs_resource():
         "sqs",
         **_get_boto3_kwargs()
     )
+
+def get_s3_resource():
+    """Returns a boto3 S3 Resource configured for LocalStack or AWS."""
+    return boto3.resource(
+        "s3",
+        region_name=settings.AWS_REGION,
+        endpoint_url=settings.AWS_ENDPOINT_URL,
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+    )
+
+def get_s3_client():
+    """Returns a boto3 S3 Client configured for LocalStack or AWS."""
+    return boto3.client(
+        "s3",
+        region_name=settings.AWS_REGION,
+        endpoint_url=settings.AWS_ENDPOINT_URL,
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+    )
+

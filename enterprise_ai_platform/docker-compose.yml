@@ -36,7 +36,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    entrypoint: ["python", "worker.py"]
+    entrypoint: ["python", "-u", "worker.py"]
+    environment:
+      - PYTHONPATH=/workspace
+      - PYTHONUNBUFFERED=1
     env_file:
       - .env
     restart: unless-stopped

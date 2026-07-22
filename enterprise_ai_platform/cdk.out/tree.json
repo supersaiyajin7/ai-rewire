@@ -77,6 +77,30 @@
               "version": "2.133.0"
             }
           },
+          "PlatformDocumentStorageBucket": {
+            "id": "PlatformDocumentStorageBucket",
+            "path": "AiPlatformInfraStack/PlatformDocumentStorageBucket",
+            "children": {
+              "Resource": {
+                "id": "Resource",
+                "path": "AiPlatformInfraStack/PlatformDocumentStorageBucket/Resource",
+                "attributes": {
+                  "aws:cdk:cloudformation:type": "AWS::S3::Bucket",
+                  "aws:cdk:cloudformation:props": {
+                    "bucketName": "platform-document-ingestion-storage"
+                  }
+                },
+                "constructInfo": {
+                  "fqn": "aws-cdk-lib.aws_s3.CfnBucket",
+                  "version": "2.133.0"
+                }
+              }
+            },
+            "constructInfo": {
+              "fqn": "aws-cdk-lib.aws_s3.Bucket",
+              "version": "2.133.0"
+            }
+          },
           "CDKMetadata": {
             "id": "CDKMetadata",
             "path": "AiPlatformInfraStack/CDKMetadata",

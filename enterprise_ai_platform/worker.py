@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """
 Enterprise AI Platform - Background Worker
-Polls SQS queue, processes jobs, and updates DynamoDB status.
+Polls SQS queue, processes jobs, downloads S3 documents if present, and updates DynamoDB status.
 """
-import json
 import sys
+import os
 import time
+
+print("🚀 [WORKER STARTUP] Worker process container booted successfully!", flush=True)
+print("⏳ [WORKER STARTUP] Waiting 5 seconds for AWS local mesh initialization...", flush=True)
+time.sleep(5)
+
+import json
 from typing import Dict, Any
 
 from app.config import settings
-from app.infrastructure.aws.client import get_sqs_resource, get_dynamodb_resource
+from app.infrastructure.aws.client import get_sqs_resource, get_dynamodb_resource, get_s3_client
 from app.core.schemas import JobStatus
 
-CONNECT_RETRY_SECONDS = 3
+CONNECT_RETRY_SECONDS = 5
 
 
 def get_env_config() -> Dict[str, str]:
@@ -20,6 +26,7 @@ def get_env_config() -> Dict[str, str]:
     return {
         "queue_name": settings.AWS_SQS_QUEUE_NAME,
         "table_name": settings.DYNAMODB_TABLE_NAME,
+        "bucket_name": settings.AWS_S3_BUCKET_NAME,
         "region": settings.AWS_REGION,
         "endpoint_url": settings.AWS_ENDPOINT_URL,
         "environment": settings.ENVIRONMENT,
@@ -27,48 +34,66 @@ def get_env_config() -> Dict[str, str]:
 
 
 def init_clients(config: Dict[str, str]):
-    """Initialize SQS and DynamoDB clients."""
-    # SQS
-    sqs = get_sqs_resource()
-    queue = sqs.get_queue_by_name(QueueName=config["queue_name"])
+    """Initialize SQS, DynamoDB, and S3 clients with retry handling."""
+    while True:
+        try:
+            print(f"📡 Connecting to SQS Queue: '{config['queue_name']}'...", flush=True)
+            sqs = get_sqs_resource()
+            queue = sqs.get_queue_by_name(QueueName=config["queue_name"])
 
-    # DynamoDB
-    dynamodb = get_dynamodb_resource()
-    table = dynamodb.Table(config["table_name"])
+            print(f"📡 Connecting to DynamoDB Table: '{config['table_name']}'...", flush=True)
+            dynamodb = get_dynamodb_resource()
+            table = dynamodb.Table(config["table_name"])
 
-    return queue, table
+            print(f"📡 Connecting to S3 Client...", flush=True)
+            s3 = get_s3_client()
+
+            print("✅ Successfully connected to LocalStack infrastructure!", flush=True)
+            return queue, table, s3
+        except Exception as e:
+            print(f"⏳ Waiting for AWS resources to exist in LocalStack... ({e})", flush=True)
+            time.sleep(CONNECT_RETRY_SECONDS)
 
 
-def process_job_payload(payload: list) -> Dict[str, Any]:
+def process_job_payload(s3_client, s3_bucket: str, s3_key: str, payload: list) -> Dict[str, Any]:
     """
-    Placeholder for actual AI processing logic.
-    In Phase 3, this will call Bedrock/LLM for extraction/classification.
-    For Phase 1, we simulate processing and return a mock result.
+    S3 Stream Ingestion & Processing.
+    Reads document from S3 if s3_bucket/s3_key exist, otherwise processes text payload.
     """
-    print(f"  🔄 Processing {len(payload)} payload items...")
+    file_info = {}
 
-    # Simulate processing time
-    time.sleep(1)
+    if s3_bucket and s3_key:
+        print(f"📥 Streaming object from S3 Grid: s3://{s3_bucket}/{s3_key}", flush=True)
+        s3_object = s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
+        content_bytes = s3_object['Body'].read()
+        file_size = len(content_bytes)
 
-    # Mock result structure - replace with actual AI logic in Phase 3
+        print(f"📄 Retrieved document: {s3_key} ({file_size} bytes)", flush=True)
+        file_info = {
+            "s3_path": f"s3://{s3_bucket}/{s3_key}",
+            "file_size_bytes": file_size,
+            "content_type": s3_object.get("ContentType", "unknown")
+        }
+
+    print(f"🔄 Processing workload...", flush=True)
+    time.sleep(2)  # Simulate downstream processing
+
     return {
-        "processed_count": len(payload),
-        "summary": "Mock processing complete",
-        "items": [{"original": item, "processed": True} for item in payload]
+        "processed_count": len(payload) if payload else 1,
+        "s3_metadata": file_info,
+        "summary": "Phase 2 Object Ingestion & Storage complete"
     }
 
 
 def update_job_status(table, job_id: str, status: JobStatus,
-                      result: Dict[str, Any] = None,
-                      error: str = None):
+                       result: Dict[str, Any] = None,
+                       error: str = None):
     """Update job status in DynamoDB with optional result or error."""
-    import time as time_module
-
     update_expr = "SET #s = :s, updated_at = :t"
     expr_names = {"#s": "status"}
     expr_values = {
         ":s": status.value,
-        ":t": int(time_module.time())
+        ":t": int(time.time())
     }
 
     if result is not None:
@@ -88,98 +113,72 @@ def update_job_status(table, job_id: str, status: JobStatus,
     )
 
 
-def poll_and_process(queue, table, config: Dict[str, str]):
-    """Main worker loop: poll SQS, process messages, update DynamoDB."""
-    print(f"🔄 Worker started | Queue: {config['queue_name']} | Table: {config['table_name']}")
-    print("   Polling for messages (long-poll 20s)...")
+def poll_and_process(queue, table, s3_client, config: Dict[str, str]):
+    """Main worker loop: poll SQS, stream from S3 if referenced, process, and update state."""
+    print(f"🚀 Worker Active | Queue: {config['queue_name']} | Table: {config['table_name']}", flush=True)
+    print("🔄 Polling SQS queue for incoming jobs...", flush=True)
 
     while True:
         try:
-            # Long-poll for messages (max 10, wait up to 20 seconds)
             messages = queue.receive_messages(
                 MaxNumberOfMessages=10,
-                WaitTimeSeconds=20,
-                VisibilityTimeout=30  # Message hidden for 30s while processing
+                WaitTimeSeconds=10,
+                VisibilityTimeout=30
             )
 
             if not messages:
-                continue  # No messages, loop again
+                continue
 
-            print(f"📥 Received {len(messages)} message(s)")
+            print(f"📥 Received {len(messages)} message(s) from SQS", flush=True)
 
             for msg in messages:
                 try:
                     body = json.loads(msg.body)
                     job_id = body.get("job_id")
+                    s3_bucket = body.get("s3_bucket")
+                    s3_key = body.get("s3_key")
                     task_payload = body.get("task_payload", [])
 
                     if not job_id:
-                        print(f"  ⚠️  Message missing job_id, deleting: {msg.body[:100]}")
+                        print(f"⚠️ Message missing job_id, deleting", flush=True)
                         msg.delete()
                         continue
 
-                    print(f"  📋 Processing job: {job_id}")
+                    print(f"📋 Processing job_id: {job_id}", flush=True)
 
                     # 1. Update status to PROCESSING
                     update_job_status(table, job_id, JobStatus.PROCESSING)
-                    print(f"  🔄 Status -> PROCESSING")
+                    print(f"🔄 Status updated -> PROCESSING", flush=True)
 
-                    # 2. Process the payload (Phase 3: replace with real AI logic)
+                    # 2. Process payload & download S3 object if present
                     try:
-                        result = process_job_payload(task_payload)
+                        result = process_job_payload(s3_client, s3_bucket, s3_key, task_payload)
 
-                        # 3. Update to COMPLETED with result
+                        # 3. Update to COMPLETED
                         update_job_status(table, job_id, JobStatus.COMPLETED, result=result)
-                        print(f"  ✅ Status -> COMPLETED")
+                        print(f"✅ Status updated -> COMPLETED", flush=True)
 
                     except Exception as e:
-                        # 4. On failure, update to FAILED with error
                         error_msg = f"{type(e).__name__}: {str(e)}"
                         update_job_status(table, job_id, JobStatus.FAILED, error=error_msg)
-                        print(f"  ❌ Status -> FAILED: {error_msg}")
+                        print(f"❌ Processing failed: {error_msg}", flush=True)
 
-                    # 5. Delete message from queue (success or failure - we've recorded state)
+                    # 4. Delete message from queue
                     msg.delete()
 
                 except json.JSONDecodeError:
-                    print(f"  ⚠️  Invalid JSON in message, deleting: {msg.body[:100]}")
+                    print(f"⚠️ Invalid JSON in message, deleting", flush=True)
                     msg.delete()
-                except Exception as e:
-                    print(f"  ❌ Error processing message: {e}")
-                    # Don't delete - let it become visible again after VisibilityTimeout
-                    # Or implement dead-letter logic in Phase 4
 
-        except KeyboardInterrupt:
-            print("\n🛑 Worker shutting down...")
-            break
         except Exception as e:
-            print(f"  ❌ Polling error: {e}")
-            time.sleep(5)  # Back off on connection errors
+            print(f"⚠️ Polling loop exception: {e}", flush=True)
+            time.sleep(CONNECT_RETRY_SECONDS)
 
 
 def main():
-    """Entry point."""
-    print("=" * 60)
-    print("  ENTERPRISE AI PLATFORM - BACKGROUND WORKER")
-    print("=" * 60)
-
     config = get_env_config()
-
-    # Validate required config
-    if not config["queue_name"] or not config["table_name"]:
-        print("❌ Missing required environment variables:")
-        print("   AWS_SQS_QUEUE_NAME, DYNAMODB_TABLE_NAME")
-        sys.exit(1)
-
-    while True:
-        try:
-            queue, table = init_clients(config)
-            break
-        except Exception as e:
-            print(f"⏳ Worker waiting for AWS endpoints: {e}")
-            time.sleep(CONNECT_RETRY_SECONDS)
-
-    poll_and_process(queue, table, config)
+    queue, table, s3_client = init_clients(config)
+    poll_and_process(queue, table, s3_client, config)
 
 
 if __name__ == "__main__":

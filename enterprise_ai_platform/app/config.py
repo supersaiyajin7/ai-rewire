@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     DYNAMODB_TABLE_NAME: str = "platform_jobs"
     AWS_SQS_QUEUE_NAME: str = "platform-job-queue"
 
+    # 🔥 PHASE 2: Register S3 Bucket Name field
+    AWS_S3_BUCKET_NAME: str = "platform-document-ingestion-storage"
+
     # Automatically tells Pydantic to read from the .env file if it exists
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
