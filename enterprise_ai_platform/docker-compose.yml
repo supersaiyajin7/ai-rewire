@@ -1,3 +1,5 @@
+version: "3.8"
+
 services:
   localstack:
     container_name: localstack_main
@@ -14,6 +16,20 @@ services:
     networks:
       - platform_network
 
+  # 🔑 LOCAL OAUTH2 / OIDC PROVIDER (Keycloak)
+  keycloak:
+    container_name: keycloak_auth_server
+    image: quay.io/keycloak/keycloak:latest
+    command: start-dev
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+    ports:
+      # Exposes UI/Token endpoints to your host machine & Postman
+      - "127.0.0.1:8080:8080"
+    networks:
+      - platform_network
+
   api_platform:
     container_name: ai_platform_app
     build:
@@ -23,8 +39,13 @@ services:
       - "127.0.0.1:8000:8000"
     env_file:
       - .env
+    environment:
+      # Keycloak URL for internal container-to-container verification
+      - KEYCLOAK_DOMAIN=http://keycloak:8080
+      - KEYCLOAK_REALM=my-platform
     depends_on:
       - localstack
+      - keycloak
     volumes:
       - .:/workspace
     networks:
@@ -45,6 +66,7 @@ services:
     restart: unless-stopped
     depends_on:
       - localstack
+      - keycloak
     volumes:
       - .:/workspace
     networks:

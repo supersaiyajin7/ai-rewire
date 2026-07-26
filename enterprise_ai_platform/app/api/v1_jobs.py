@@ -1,11 +1,15 @@
-from fastapi import APIRouter, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, HTTPException, status, UploadFile, File, Depends
 from app.core.schemas import JobCreateRequest, JobResponse
 from app.infrastructure.repository import get_job_repo
+from app.core.auth import verify_jwt_token  # 👈 Added Auth Dependency Import
 
 router = APIRouter(prefix="/v1/jobs", tags=["Job Lifecycle Engine"])
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED, response_model=JobResponse)
-def trigger_batch_job(request: JobCreateRequest):
+def trigger_batch_job(
+    request: JobCreateRequest,
+    token_payload: dict = Depends(verify_jwt_token)  # 🔒 Enforce OAuth Protection
+):
     """Ingest a standard text workload and return an HTTP 202 tracking contract immediately."""
     if not request.payloads:
         raise HTTPException(status_code=400, detail="Payload collection cannot be empty.")
@@ -14,7 +18,10 @@ def trigger_batch_job(request: JobCreateRequest):
 
 # 🔥 PHASE 2: Unstructured File Ingestion Endpoint
 @router.post("/upload", status_code=status.HTTP_202_ACCEPTED, response_model=JobResponse)
-async def trigger_file_job(file: UploadFile = File(...)):
+async def trigger_file_job(
+    file: UploadFile = File(...),
+    token_payload: dict = Depends(verify_jwt_token)  # 🔒 Enforce OAuth Protection
+):
     """Ingest a raw binary file (PDF, TXT, Image), store in S3, and start processing pipeline."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="Uploaded file must have a valid filename.")
@@ -27,7 +34,10 @@ async def trigger_file_job(file: UploadFile = File(...)):
     )
 
 @router.get("/{job_id}", response_model=JobResponse)
-def get_job_status(job_id: str):
+def get_job_status(
+    job_id: str,
+    token_payload: dict = Depends(verify_jwt_token)  # 🔒 Enforce OAuth Protection
+):
     """Poll the status engine for an existing job tracking sequence."""
     job = get_job_repo().get(job_id)
     if not job:
